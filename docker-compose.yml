@@ -1,0 +1,140 @@
+version: '3.5'
+services:
+  openldap:
+    image: osixia/openldap:1.5.0
+    container_name: openldap
+    restart: unless-stopped
+    command: --copy-service
+    environment:
+      TZ: "${TZ}"
+      LDAP_LOG_LEVEL: "256"
+      LDAP_ORGANISATION: "${LDAP_ORGANISATION}"
+      LDAP_DOMAIN: "${LDAP_DOMAIN}"
+      LDAP_BASE_DN: ""
+      LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD}"
+      LDAP_CONFIG_PASSWORD: "${LDAP_CONFIG_PASSWORD}"
+      LDAP_READONLY_USER: "false"
+      #LDAP_READONLY_USER_USERNAME: "readonly"
+      #LDAP_READONLY_USER_PASSWORD: "readonly"
+      LDAP_RFC2307BIS_SCHEMA: "false"
+      LDAP_BACKEND: "mdb"
+      LDAP_TLS: "true"
+      LDAP_TLS_CRT_FILENAME: "${LDAP_TLS_CRT_FILENAME}" #full chain pem
+      LDAP_TLS_KEY_FILENAME: "${LDAP_TLS_KEY_FILENAME}" #priv key pem
+      #LDAP_TLS_DH_PARAM_FILENAME: "${LDAP_TLS_DH_PARAM_FILENAME}" #dhparam pem
+      LDAP_TLS_CA_CRT_FILENAME: "${LDAP_TLS_CA_CRT_FILENAME}" #root pem
+      LDAP_TLS_ENFORCE: "false"
+      LDAP_TLS_CIPHER_SUITE: "SECURE256:-VERS-SSL3.0"
+      LDAP_TLS_VERIFY_CLIENT: "try"
+      LDAP_REPLICATION: "false"
+      #LDAP_REPLICATION_CONFIG_SYNCPROV: 'binddn="cn=admin,cn=config" bindmethod=simple credentials="$$LDAP_CONFIG_PASSWORD" searchbase="cn=config" type=refreshAndPersist retry="60 +" timeout=1 starttls=critical'
+      #LDAP_REPLICATION_DB_SYNCPROV: 'binddn="cn=admin,$$LDAP_BASE_DN" bindmethod=simple credentials="$$LDAP_ADMIN_PASSWORD" searchbase="$$LDAP_BASE_DN" type=refreshAndPersist interval=00:00:00:10 retry="60 +" timeout=1 starttls=critical'
+      #LDAP_REPLICATION_HOSTS: "#PYTHON2BASH:['ldap://ldap.example.org','ldap://ldap2.example.org']"
+      KEEP_EXISTING_CONFIG: "false"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "true"
+      LDAP_SSL_HELPER_PREFIX: "ldap"
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./data/slapd/database:/var/lib/ldap
+      - ./data/slapd/config:/etc/ldap/slapd.d
+      - ./ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom
+      - ./out:/container/service/slapd/assets/certs/
+    labels:
+      traefik.enable: true
+      traefik.docker.network: traefik-public
+      traefik.constraint-label: traefik-public
+        # LDAP
+      traefik.tcp.routers.ldap-tcp.rule: HostSNI(`*`)
+      traefik.tcp.routers.ldap-tcp.entrypoints: ldap-tcp
+      traefik.tcp.routers.ldap-tcp.service: ldap-tcp-svc
+      traefik.tcp.services.ldap-tcp-svc.loadbalancer.server.port: 389/tcp
+      traefik.udp.routers.ldap-udp.entrypoints: ldap-udp
+      traefik.udp.routers.ldap-udp.service: ldap-udp-svc
+      traefik.udp.services.ldap-udp-svc.loadbalancer.server.port: 389/udp
+        # LDAPS
+      traefik.tcp.routers.ldaps.rule: HostSNI(`*`)
+      traefik.tcp.routers.ldaps.entrypoints: ldaps
+      traefik.tcp.routers.ldaps.tls: true
+      traefik.tcp.routers.ldaps.tls.passthrough: true
+      traefik.tcp.routers.ldaps.tls.certresolver: myresolver
+      traefik.tcp.routers.ldaps.service: ldaps-svc
+      traefik.tcp.services.ldaps-svc.loadbalancer.server.port: 636
+    domainname: "${DOMAINNAME}"
+    hostname: "${HOSTNAME}"
+  phpldapadmin:
+    image: osixia/phpldapadmin:latest
+    container_name: phpldapadmin
+    restart: unless-stopped
+    environment:
+      TZ: "${TZ}"
+      PHPLDAPADMIN_LDAP_HOSTS: "openldap"
+      PHPLDAPADMIN_HTTPS: "false"
+    depends_on:
+      - openldap
+    labels:
+      traefik.enable: true
+      #traefik.docker.network=traefik-public
+      #traefik.constraint-label=traefik-public
+      traefik.http.routers.phpldapadmin.rule: Host(`ec2-3-87-14-208.compute-1.amazonaws.com`)
+      traefik.http.routers.phpldapadmin.entrypoints: websecure
+      traefik.http.routers.phpldapadmin.tls.certresolver: myresolver
+  traefik:
+    image: "traefik:v2.5"
+    container_name: "traefik"
+    restart: unless-stopped
+    command:
+      - "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      #- "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      #- "--certificatesresolvers.myresolver.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      - "--entrypoints.ldap-tcp.address=:389/tcp"
+      - "--entrypoints.ldap-udp.address=:389/udp"
+      - "--entrypoints.ldaps.address=:636/tcp"
+    ports:
+      # Listen on port 80, default for HTTP, necessary to redirect to HTTPS
+      #- target: 80
+        #published: 80
+        #mode: host
+      # Listen on port 443, default for HTTPS
+      - target: 443
+        published: 443
+        mode: host
+      # Listen on ports 389/636, LDAP and LDAPS
+      - target: 389
+        published: 389
+        mode: host
+      - target: 636
+        published: 636
+        mode: host
+    volumes:
+      - ./letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+  certsync:
+    image: stedolan/jq
+    # Dumps both certificate and key for "${HOSTNAME}"
+    entrypoint: |
+      /bin/bash -c "
+        jq -r '.[].Certificates[] | select(.domain.main==\"${HOSTNAME}\") | .certificate' /data/acme.json | base64 -d > /out/tls_cert.pem;
+        jq -r '.[].Certificates[] | select(.domain.main==\"${HOSTNAME}\") | .key' /data/acme.json | base64 -d > /out/tls_key.pem;
+      "
+    depends_on:
+      - traefik
+    volumes:
+      - ./letsencrypt:/data:ro # Mount traefik volume as read-only
+      - ./out:/out # And whichever volume you want to output on
+    command: cd /out ; curl -o root.pem https://letsencrypt.org/certs/isrg-root-x1-cross-signed.pem ; cat /out/chain.pem /out/root.pem > cacerts.pem ; ${HOSTNAME} resolv
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.role==manager] # Only run on the manager node (Where traefik and its volume exists)
+      restart_policy:
+        delay: 24h # Re-run every 24 hours
